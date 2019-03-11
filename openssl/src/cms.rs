@@ -98,8 +98,7 @@ impl CmsContentInfoRef {
     }
 
     /// Verify the sender's signature given an optional sender's certificate `cert` and CA store
-    /// `store`. If the signature is a detached one, `data` is used for the input of signed data.
-    /// If `output_data` is not `None`, the signed data is written to it.
+    /// `store`. If the signature is correct, signed data are returned, otherwise `None`.
     ///
     /// OpenSSL documentation at [`CMS_verify`]
     /// 
@@ -107,41 +106,31 @@ impl CmsContentInfoRef {
     pub fn verify(
         &self,
         certs: Option<&StackRef<X509>>,
-        store: Option<&X509Store>,
-        data: Option<&[u8]>,
-        output_data: Option<&mut Vec<u8>>,
+        store: &X509Store,
         flags: CMSOptions,
-    ) -> Result<bool, ErrorStack> {
+    ) -> Result<Option<Vec<u8>>, ErrorStack> {
         unsafe {
             let certs = match certs {
                 Some(certs) => certs.as_ptr(),
                 None => ptr::null_mut(),
             };
-            let store = match store {
-                Some(store) => store.as_ptr(),
-                None => ptr::null_mut(),
-            };
-            let in_data = match data {
-                Some(data) => MemBioSlice::new(data)?.as_ptr(),
-                None => ptr::null_mut(),
-            };
-            let out_bio = MemBio::new()?;
+            let store =store.as_ptr();
+            let out = MemBio::new()?;
 
             let is_valid = cvt_n(ffi::CMS_verify(
                 self.as_ptr(),
                 certs,
                 store,
-                in_data,
-                out_bio.as_ptr(),
+                ptr::null_mut(),
+                out.as_ptr(),
                 flags.bits(),
             ))? == 1;
 
-            if let Some(out_data) = output_data {
-                out_data.clear();
-                out_data.extend_from_slice(out_bio.get_buf());
-            };
-
-            Ok(is_valid)
+            if is_valid {
+                Ok(Some(out.get_buf().to_owned()))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -341,10 +330,9 @@ mod test {
         store_builder.add_cert(priv_cert.cert.clone()).expect("failed to add certificate to store");
         let store = store_builder.build();
 
-        let mut data = Vec::new();
-        let verify = verify.verify(Some(&cert_stack), Some(&store), None, Some(&mut data), CMSOptions::empty()).expect("failed to verify cms");
-        assert!(verify);
-        let verify = String::from_utf8(data).expect("failed to create string from cms content");
+        let verify = verify.verify(Some(&cert_stack), &store, CMSOptions::empty()).expect("failed to verify cms");
+        let verify = verify.expect("cms verification returned None");
+        let verify = String::from_utf8(verify).expect("failed to create string from cms content");
 
         assert_eq!(input, verify);
     }
